@@ -1,0 +1,25 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.9.34714.143
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ASR_Client2", "ASR_Client2.csproj", "{485614A6-184A-475D-8CA5-BF21AB6F4A36}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{485614A6-184A-475D-8CA5-BF21AB6F4A36}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{485614A6-184A-475D-8CA5-BF21AB6F4A36}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{485614A6-184A-475D-8CA5-BF21AB6F4A36}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{485614A6-184A-475D-8CA5-BF21AB6F4A36}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {026C8CB7-23B4-40C7-8D38-B963786F0C8C}
+	EndGlobalSection
+EndGlobal
