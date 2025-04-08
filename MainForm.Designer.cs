@@ -35,6 +35,7 @@
             startButton = new Button();
             stopButton = new Button();
             pttButton = new Button();
+            textBox1 = new TextBox();
             bottomPanel.SuspendLayout();
             SuspendLayout();
             // 
@@ -47,6 +48,8 @@
             statusLabel.Name = "statusLabel";
             statusLabel.Size = new Size(375, 19);
             statusLabel.TabIndex = 0;
+            statusLabel.Text = "Ответ";
+            statusLabel.TextAlign = ContentAlignment.TopCenter;
             // 
             // menuStrip1
             // 
@@ -92,6 +95,7 @@
             startButton.TabIndex = 0;
             startButton.Text = "START";
             startButton.UseVisualStyleBackColor = true;
+            startButton.Click += startButton_Click;
             // 
             // stopButton
             // 
@@ -106,18 +110,28 @@
             // 
             // pttButton
             // 
-            pttButton.Location = new Point(147, 145);
+            pttButton.Location = new Point(158, 230);
             pttButton.Name = "pttButton";
-            pttButton.Size = new Size(76, 65);
+            pttButton.Size = new Size(60, 35);
             pttButton.TabIndex = 4;
             pttButton.Text = "Mic";
             pttButton.UseVisualStyleBackColor = true;
+            // 
+            // textBox1
+            // 
+            textBox1.Dock = DockStyle.Top;
+            textBox1.Location = new Point(0, 109);
+            textBox1.Multiline = true;
+            textBox1.Name = "textBox1";
+            textBox1.Size = new Size(375, 85);
+            textBox1.TabIndex = 5;
             // 
             // MainForm
             // 
             AutoScaleDimensions = new SizeF(7F, 15F);
             AutoScaleMode = AutoScaleMode.Font;
             ClientSize = new Size(375, 344);
+            Controls.Add(textBox1);
             Controls.Add(pttButton);
             Controls.Add(bottomPanel);
             Controls.Add(responseLabel);
@@ -140,5 +154,6 @@
         private Button startButton;
         private Button stopButton;
         private Button pttButton;
+        private TextBox textBox1;
     }
 }
