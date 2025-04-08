@@ -46,7 +46,7 @@
             statusLabel.Location = new Point(0, 24);
             statusLabel.Margin = new Padding(0);
             statusLabel.Name = "statusLabel";
-            statusLabel.Size = new Size(375, 19);
+            statusLabel.Size = new Size(340, 19);
             statusLabel.TabIndex = 0;
             statusLabel.Text = "Ответ";
             statusLabel.TextAlign = ContentAlignment.TopCenter;
@@ -55,7 +55,7 @@
             // 
             menuStrip1.Location = new Point(0, 0);
             menuStrip1.Name = "menuStrip1";
-            menuStrip1.Size = new Size(375, 24);
+            menuStrip1.Size = new Size(340, 24);
             menuStrip1.TabIndex = 1;
             menuStrip1.Text = "menuStrip1";
             // 
@@ -65,7 +65,7 @@
             responseLabel.Font = new Font("Segoe UI", 18F, FontStyle.Regular, GraphicsUnit.Point, 204);
             responseLabel.Location = new Point(0, 43);
             responseLabel.Name = "responseLabel";
-            responseLabel.Size = new Size(375, 66);
+            responseLabel.Size = new Size(340, 66);
             responseLabel.TabIndex = 2;
             responseLabel.TextAlign = ContentAlignment.TopCenter;
             // 
@@ -77,12 +77,12 @@
             bottomPanel.Controls.Add(startButton, 0, 0);
             bottomPanel.Controls.Add(stopButton, 1, 0);
             bottomPanel.Dock = DockStyle.Bottom;
-            bottomPanel.Location = new Point(0, 273);
+            bottomPanel.Location = new Point(0, 470);
             bottomPanel.Margin = new Padding(5);
             bottomPanel.Name = "bottomPanel";
             bottomPanel.RowCount = 1;
             bottomPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 50F));
-            bottomPanel.Size = new Size(375, 71);
+            bottomPanel.Size = new Size(340, 71);
             bottomPanel.TabIndex = 3;
             // 
             // startButton
@@ -91,7 +91,7 @@
             startButton.Location = new Point(10, 10);
             startButton.Margin = new Padding(10);
             startButton.Name = "startButton";
-            startButton.Size = new Size(167, 51);
+            startButton.Size = new Size(150, 51);
             startButton.TabIndex = 0;
             startButton.Text = "START";
             startButton.UseVisualStyleBackColor = true;
@@ -100,17 +100,17 @@
             // stopButton
             // 
             stopButton.Dock = DockStyle.Fill;
-            stopButton.Location = new Point(197, 10);
+            stopButton.Location = new Point(180, 10);
             stopButton.Margin = new Padding(10);
             stopButton.Name = "stopButton";
-            stopButton.Size = new Size(168, 51);
+            stopButton.Size = new Size(150, 51);
             stopButton.TabIndex = 1;
             stopButton.Text = "STOP";
             stopButton.UseVisualStyleBackColor = true;
             // 
             // pttButton
             // 
-            pttButton.Location = new Point(158, 230);
+            pttButton.Location = new Point(140, 432);
             pttButton.Name = "pttButton";
             pttButton.Size = new Size(60, 35);
             pttButton.TabIndex = 4;
@@ -123,14 +123,14 @@
             textBox1.Location = new Point(0, 109);
             textBox1.Multiline = true;
             textBox1.Name = "textBox1";
-            textBox1.Size = new Size(375, 85);
+            textBox1.Size = new Size(340, 317);
             textBox1.TabIndex = 5;
             // 
             // MainForm
             // 
             AutoScaleDimensions = new SizeF(7F, 15F);
             AutoScaleMode = AutoScaleMode.Font;
-            ClientSize = new Size(375, 344);
+            ClientSize = new Size(340, 541);
             Controls.Add(textBox1);
             Controls.Add(pttButton);
             Controls.Add(bottomPanel);
