@@ -11,6 +11,7 @@ using NAudio.Wave;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using System.Diagnostics;
+using static System.Net.Mime.MediaTypeNames;
 
 namespace ASR_Client2
 {
@@ -23,16 +24,22 @@ namespace ASR_Client2
         private bool isRecording = false;
         private bool isListening = false;
         private DateTime lastSpeechTime;
-        private const int SilenceTimeout = 15000; // 15 seconds
+        private const int SilenceTimeout = 10000; // 10 seconds
         private CancellationTokenSource cts;
-        private string startAudio;
-        private string stopAudio;
-        private const int ChunkSize = 50;
         private static BufferedWaveProvider waveProvider;
         private WaveOutEvent waveOut;
         private readonly object syncLock = new object();
-        private readonly object wsLock = new object();
-        private Config ww_config;
+        private Config wwConfig;
+
+        public enum ApplicationState
+        {
+            Idle,
+            Listening,
+            Recording,
+            Playing
+        }
+
+        private ApplicationState currentState = ApplicationState.Idle;
 
 
         public MainForm()
@@ -42,62 +49,28 @@ namespace ASR_Client2
             InitializeEventHandlers();
         }
 
-        private void LoadConfiguration()
+        private async void LoadConfiguration()
         {
             try
             {
-                // Load configuration from JSON file
-                string jsonContent = File.ReadAllText("config.json");
-                ww_config = JsonConvert.DeserializeObject<Config>(jsonContent);
+                // Load configuration from JSON file asynchronously
+                var jsonContent = await File.ReadAllTextAsync("config.json");
+                wwConfig = JsonConvert.DeserializeObject<Config>(jsonContent);
+                stopButton.Enabled = false;
             }
             catch (Exception ex)
             {
+                // Log error and show message
                 MessageBox.Show($"Configuration load error: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                stopButton.Enabled = false;
                 Close();
             }
         }
 
         private void InitializeEventHandlers()
         {
-            startButton.Click += (s, e) => startButton_Click(s, e);
-            stopButton.Click += (s, e) => stopButton_Click(s, e);
-        }
-
-        private void InitializeComponents()
-        {
-            try
-            {
-                ValidateKeywordFiles();
-
-                porcupine = Porcupine.FromKeywordPaths(
-                    accessKey: "BGfm9K2x+ZxUBaStsMPLWRGW5UK7vcZ0LnAbKJI1Ctkx/9w44vNS2g==",
-                    keywordPaths: ww_config.WakeWordModels.ToArray(),
-                    modelPath: null,
-                    sensitivities: new float[] { 1.0f, 1.0f });
-
-                recorder = PvRecorder.Create(porcupine.FrameLength, -1);
-
-                waveIn = new WaveInEvent
-                {
-                    WaveFormat = new WaveFormat(ww_config.SampleRate, 1),
-                    BufferMilliseconds = (int)((double)ChunkSize / ww_config.SampleRate * 1000)
-                };
-                waveIn.DataAvailable += OnAudioReceived;
-
-                waveOut = new WaveOutEvent();
-                waveProvider = new BufferedWaveProvider(new WaveFormat(48000, 16, 1))
-                {
-                    BufferDuration = TimeSpan.FromSeconds(30)
-                };
-                waveOut.Init(waveProvider);
-
-                ws = new ClientWebSocket();
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show($"Initialization failed: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                Close();
-            }
+            startButton.Click += startButton_Click; // Using nameof can be beneficial here
+            stopButton.Click += stopButton_Click;
         }
 
 
@@ -108,7 +81,7 @@ namespace ASR_Client2
             try
             {
                 InitializeComponents();
-                Task.Run(() => StartWakeWordDetection());
+                Task.Run(StartWakeWordDetection);
                 startButton.Enabled = false;
                 stopButton.Enabled = true;
             }
@@ -122,19 +95,52 @@ namespace ASR_Client2
         }
         private void stopButton_Click(object sender, EventArgs e)
         {
-            if (isRecording)
-            {
-                StopRecording();
-                isRecording = false;
-            }
-            if (isListening)
-            {
-                StopListening();
-                isListening = false;
-            }
+            _ = StopRecordingAsync();
 
+            _ = StopListening();
+
+            currentState = ApplicationState.Idle;
             _ = CleanupResources();
             startButton.Enabled = true;
+        }
+
+        private void InitializeComponents()
+        {
+            try
+            {
+                ValidateKeywordFiles();
+
+                porcupine = Porcupine.FromKeywordPaths(
+                    accessKey: wwConfig.AccessKey,
+                    keywordPaths: wwConfig.WakeWordModels.ToArray(),
+                    modelPath: null,
+                    sensitivities: new float[] { 1.0f, 1.0f });
+
+                recorder = PvRecorder.Create(porcupine.FrameLength, -1);
+
+                waveIn = new WaveInEvent
+                {
+                    WaveFormat = new WaveFormat(wwConfig.SampleRate, 16, 1),
+                };
+                waveIn.DataAvailable += OnAudioReceived;
+
+                waveOut = new WaveOutEvent();
+                waveProvider = new BufferedWaveProvider(new WaveFormat(48000, 16, 1))
+                {
+                    BufferDuration = TimeSpan.FromSeconds(30)
+                };
+                waveOut.Init(waveProvider);
+
+                ws = new ClientWebSocket();
+
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Initialization failed: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                Close();
+
+            }
+
         }
 
         private async Task UpdateLabelAsync(Label label, string text)
@@ -142,8 +148,10 @@ namespace ASR_Client2
             if (label.InvokeRequired)
             {
                 // If called from a different thread, use Invoke to ensure thread safety
-                await Task.Run(() => label.Invoke(new Action<string>((t) => label.Text = t), text));
-                // await label.Invoke(() => label.Text = text);
+                await Task.Run(() =>
+                {
+                    label.Invoke(new Action(() => label.Text = text));
+                });
             }
             else
             {
@@ -151,6 +159,7 @@ namespace ASR_Client2
                 label.Text = text;
             }
         }
+
 
         // This method does not need async/await since the UI update is thread-safe with Invoke
         private async Task UpdateStatusLabel(string text)
@@ -165,36 +174,36 @@ namespace ASR_Client2
 
         private async void StartWakeWordDetection()
         {
-            if (isListening) return;
+            if (currentState == ApplicationState.Listening) return;
 
             try
             {
-                isListening = true;
+
                 cts?.Dispose();  // Clean up previous token source
                 cts = new CancellationTokenSource();
 
                 await UpdateStatusLabel("Ожидание активационной команды...");
                 recorder.Start();
-                await Task.Run(() => WakeWordDetectionLoop(), cts.Token);
+                currentState = ApplicationState.Listening;
+                await Task.Run(() => WakeWordDetectionLoop(cts.Token), cts.Token).ConfigureAwait(false);
+                await LogMessageAsync("StartWakeWordDetection");
             }
             catch (OperationCanceledException)
             {
                 await UpdateStatusLabel("Прослушивание остановлено");
+                StopListening();
             }
             catch (Exception ex)
             {
                 await UpdateStatusLabel($"Ошибка: {ex.Message}");
-            }
-            finally
-            {
-                isListening = false;
+                StopListening();
             }
         }
 
-        private void WakeWordDetectionLoop()
+        private async void WakeWordDetectionLoop(CancellationToken cancellationToken)
         {
 
-            while (isListening && recorder.IsRecording && !cts.Token.IsCancellationRequested)
+            while ((currentState == ApplicationState.Listening) && recorder.IsRecording && !cancellationToken.IsCancellationRequested)
             {
                 try
                 {
@@ -203,9 +212,10 @@ namespace ASR_Client2
 
                     if (keywordIndex >= 0)
                     {
-                        _ = UpdateStatusLabel("Команда распознана");
-                        ConnectToServer();
-                        StartRecording();
+                        await UpdateStatusLabel("Команда распознана");
+                        StopListening();
+
+                        await StartRecordingAsync();
                     }
                 }
                 catch (Exception ex)
@@ -232,20 +242,26 @@ namespace ASR_Client2
         }
 
 
-        public void StopListening()
+        public async Task StopListening()
         {
+            if (currentState != ApplicationState.Listening) return;
             try
             {
-                recorder?.Stop();
+                // Stop the wake word detection
+                await Task.Run(() =>
+                {
+                    recorder?.Stop(); // Call the synchronous Stop method
+                });
+                await LogMessageAsync("StopListening: Successfully stopped.");
+
             }
             catch (Exception ex)
             {
-                _ = UpdateStatusLabel($"Ошибка остановки: {ex.Message}");
+                await UpdateStatusLabel($"Ошибка остановки: {ex.Message}");
             }
             finally
             {
-                isListening = false;
-                _ = UpdateStatusLabel("Остановлено");
+                await UpdateStatusLabel("Остановлено");
             }
         }
 
@@ -254,11 +270,12 @@ namespace ASR_Client2
             try
             {
                 var ct = cts?.Token ?? CancellationToken.None;
-                if (ws?.State != WebSocketState.Open || !isRecording)
+                if (ws.State != WebSocketState.Open || currentState != ApplicationState.Recording)
                     return;
 
                 await ws.SendAsync(new ArraySegment<byte>(e.Buffer, 0, e.BytesRecorded), WebSocketMessageType.Binary, true, ct);
-                await LogMessageAsync(e.BytesRecorded.ToString());
+
+
             }
             catch (WebSocketException ex) when (ex.WebSocketErrorCode == WebSocketError.InvalidState)
             {
@@ -274,36 +291,49 @@ namespace ASR_Client2
             }
         }
 
-        private async void ConnectToServer()
+        private async Task<bool> ConnectToServerAsync()
         {
-            try
+            int retryCount = 0;
+
+            while (retryCount < 3)
             {
-                lock (wsLock)
+                try
                 {
                     if (ws.State != WebSocketState.Open)
                     {
-                        ws.ConnectAsync(new Uri(ww_config.WebSocketUrl), cts.Token);
-                        SendConfiguration();
+                        await ws.ConnectAsync(new Uri(wwConfig.WebSocketUrl), cts.Token);
+                        await SendConfiguration();
+                        await UpdateStatusLabel("Получения сообщений...");
+
+                        _ = Task.Run(() => ReceiveMessages(cts.Token)); // Fire-and-forget
+                        return true; // Exit if connection is successful
                     }
                 }
-            }
-            catch (Exception ex)
-            {
-                await UpdateStatusLabel($"Ошибка подключения: {ex.Message}");
-            }
-            finally
-            {
-                if (ws.State == WebSocketState.Open)
+                catch (WebSocketException ex)
                 {
-                    await UpdateStatusLabel("Получения сообщений...");
-                    _ = Task.Run(ReceiveMessages, cts.Token);
+                    await UpdateStatusLabel($"Ошибка подключения: {ex.Message}");
+                    retryCount++;
+                    await Task.Delay(2000);
+                }
+                catch (OperationCanceledException)
+                {
+                    await UpdateStatusLabel("Connection attempt canceled.");
+                    return false;
+                }
+                catch (Exception ex)
+                {
+                    await UpdateStatusLabel($"Unexpected error: {ex.Message}");
+                    return false;
                 }
             }
+
+            await UpdateStatusLabel("Max connection attempts reached.");
+            return false;
         }
 
         private async Task SendConfiguration()
         {
-            var configJson = JsonConvert.SerializeObject(new { config = new { sample_rate = ww_config.SampleRate } });
+            var configJson = JsonConvert.SerializeObject(new { config = new { sample_rate = wwConfig.SampleRate } });
             var configBytes = Encoding.UTF8.GetBytes(configJson);
 
             try
@@ -327,20 +357,29 @@ namespace ASR_Client2
             }
         }
 
-        private async Task ReceiveMessages()
+        private async Task CloseWebSocketConnection()
         {
+            await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, string.Empty, CancellationToken.None);
+            await UpdateStatusLabel("Server closed connection");
+            await StopRecordingAsync();
+        }
+
+        private async Task ReceiveMessages(CancellationToken cancellationToken)
+        {
+
             var buffer = new byte[16384 * 4]; // 16KB buffer
             try
             {
-                while (ws?.State == WebSocketState.Open && !cts.IsCancellationRequested && isRecording)
+
+                while (ws?.State == WebSocketState.Open && !cts.IsCancellationRequested && (currentState == ApplicationState.Recording))
                 {
+
                     var result = await ws.ReceiveAsync(new ArraySegment<byte>(buffer), cts.Token);
+
 
                     if (result.MessageType == WebSocketMessageType.Close)
                     {
-                        await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, string.Empty, CancellationToken.None);
-                        await UpdateStatusLabel("Server closed connection");
-                        StopRecording();
+                        await CloseWebSocketConnection();
                         break;
                     }
 
@@ -349,60 +388,64 @@ namespace ASR_Client2
             }
             catch (OperationCanceledException)
             {
-                await LogMessageAsync("Receive operation canceled");
-                StopRecording();
+                _ = LogMessageAsync("Receive operation canceled");
+                await StopRecordingAsync();
             }
             catch (Exception ex)
             {
-                await LogMessageAsync($"Receive error: {ex.Message}");
+                _ = LogMessageAsync($"Receive error: {ex.Message}");
+                await StopRecordingAsync();
             }
         }
 
         private void ProcessServerResponse(byte[] buffer, WebSocketReceiveResult result)
         {
-            if (this.IsDisposed) return;
 
-            this.Invoke((Action)(() =>
+            if (result.MessageType == WebSocketMessageType.Binary)
             {
-                if (this.IsDisposed) return;
+                ProcessAudioChunk(buffer, result.Count);
+            }
+            else if (result.MessageType == WebSocketMessageType.Text)
+            {
+                var message = Encoding.UTF8.GetString(buffer, 0, result.Count);
+                HandleSpeechResult(message).ConfigureAwait(false);
+            }
 
-                if (result.MessageType == WebSocketMessageType.Binary)
-                {
-                    ProcessAudioChunk(buffer, result.Count);
-                }
-                else if (result.MessageType == WebSocketMessageType.Text)
-                {
-                    var message = Encoding.UTF8.GetString(buffer, 0, result.Count);
-                    HandleSpeechResult(message);
-                }
-            }));
         }
 
-        private void HandleSpeechResult(string message)
+        private async Task HandleSpeechResult(string message)
         {
             try
             {
                 var response = JObject.Parse(message);
                 if (response["text"] != null)
                 {
-                    bool isPartial = response["partial"]?.Value<bool>() ?? true;
                     string text = response["text"]?.ToString();
-                    lastSpeechTime = DateTime.Now;
-                    _ = LogMessageAsync(lastSpeechTime.ToString());
-                    _ = UpdateResponseLabel(text);
-                }
-                else
-                {
-                    if (DateTime.Now - lastSpeechTime > TimeSpan.FromMilliseconds(SilenceTimeout))
+
+                    if (!string.IsNullOrWhiteSpace(text))
                     {
-                        _ = LogMessageAsync("Stopped");
-                        StopRecording();
+                        lastSpeechTime = DateTime.Now;
+                        await LogMessageAsync($"HandleSpeech text!= '' {lastSpeechTime} = {text}");
                     }
+                    else if (DateTime.Now - lastSpeechTime > TimeSpan.FromMilliseconds(SilenceTimeout))
+                    {
+
+                        await LogMessageAsync("Stopped");
+                        await StopRecordingAsync();
+
+                    }
+
+                    await UpdateResponseLabel(text);
+                }
+                else if (DateTime.Now - lastSpeechTime > TimeSpan.FromMilliseconds(SilenceTimeout))
+                {
+                    await LogMessageAsync("Stopped");
+                    await StopRecordingAsync();
                 }
             }
             catch
             {
-                _ = UpdateStatusLabel("Received non-speech message");
+                await UpdateStatusLabel("Received non-speech message");
             }
         }
 
@@ -410,6 +453,7 @@ namespace ASR_Client2
         {
             try
             {
+                _ = LogMessageAsync("ProcessAudioChunk");
                 if (waveProvider.BufferedDuration.TotalSeconds > 5)
                 {
                     waveProvider.ClearBuffer();
@@ -418,43 +462,49 @@ namespace ASR_Client2
             }
             catch (Exception ex)
             {
+                waveProvider.ClearBuffer();
                 Debug.WriteLine($"Audio processing error: {ex.Message}");
             }
         }
 
-        private void StartRecording()
+        private async Task StartRecordingAsync()
         {
-            lock (syncLock)
-            {
-                if (isRecording) return;
-                isRecording = true;
-                isListening = false;
-            }
-
             try
             {
-                PlayMp3InBackground(startAudio);
-                waveIn.StartRecording();
-                _ = UpdateStatusLabel("Запись...");
-                lastSpeechTime = DateTime.Now;
-                _ = LogMessageAsync(lastSpeechTime.ToString());
+                PlayMp3InBackground(wwConfig.AudioFiles.Start);
+
+                // Ensure connection to the server
+                bool isConnected = await ConnectToServerAsync(); // Make this async
+
+                if (isConnected)
+                {
+                    waveIn.StartRecording();
+                    currentState = ApplicationState.Recording;
+                    await UpdateStatusLabel("Запись...");
+                    lastSpeechTime = DateTime.Now;
+                    await LogMessageAsync("StartRecording = " + lastSpeechTime.ToString());
+                }
+                else
+                {
+                    await UpdateStatusLabel("Не удалось подключиться к серверу.");
+                }
             }
             catch (Exception ex)
             {
                 _ = UpdateStatusLabel($"Ошибка записи: {ex.Message}");
-                isRecording = false;
-                StopRecording();
+                await StopRecordingAsync(); // Ensure this is async too
             }
         }
 
-        private async void StopRecording()
+        private async Task StopRecordingAsync()
         {
-            if (!isRecording) return;
+            if (currentState != ApplicationState.Recording) return;
 
             try
             {
                 waveIn?.StopRecording();
-                PlayMp3InBackground(stopAudio);
+                await LogMessageAsync("StopRecording");
+                PlayMp3InBackground(wwConfig.AudioFiles.Stop);
             }
             catch (Exception ex)
             {
@@ -462,54 +512,7 @@ namespace ASR_Client2
             }
             finally
             {
-                isRecording = false;
                 StartWakeWordDetection(); // Return to wake word detection
-            }
-        }
-
-        private async Task ReconnectWebSocket()
-        {
-            try
-            {
-                int retries = 0;
-                const int maxRetries = 5;
-                const int delayMilliseconds = 2000;
-
-                while (retries < maxRetries && ws.State != WebSocketState.Open)
-                {
-                    try
-                    {
-                        // Attempt to close any existing connection
-                        if (ws.State == WebSocketState.Open)
-                        {
-                            await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "Reconnecting", CancellationToken.None);
-                        }
-                        ws.Dispose();
-                        ws = new ClientWebSocket();
-
-                        // Attempt connection
-                        await ws.ConnectAsync(new Uri("ws://192.168.42.199:80/asr/"), cts.Token);
-                        break;
-                    }
-                    catch (Exception)
-                    {
-                        retries++;
-                        if (retries < maxRetries)
-                        {
-                            // Wait before retrying
-                            await Task.Delay(delayMilliseconds);
-                        }
-                    }
-                }
-
-                if (ws.State != WebSocketState.Open)
-                {
-                    MessageBox.Show("Failed to reconnect to the server after several attempts.", "Reconnection Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                }
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show($"Reconnect WebSocket Error: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
 
@@ -546,7 +549,7 @@ namespace ASR_Client2
 
         private void ValidateKeywordFiles()
         {
-            foreach (var keywordPath in ww_config.WakeWordModels)
+            foreach (var keywordPath in wwConfig.WakeWordModels)
             {
                 if (!File.Exists(keywordPath))
                 {
@@ -599,6 +602,7 @@ namespace ASR_Client2
 
     public class Config
     {
+        public string AccessKey { get; set; }
         public string WebSocketUrl { get; set; }
         public int SampleRate { get; set; }
         public List<string> WakeWordModels { get; set; }

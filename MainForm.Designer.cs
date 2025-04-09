@@ -95,7 +95,6 @@
             startButton.TabIndex = 0;
             startButton.Text = "START";
             startButton.UseVisualStyleBackColor = true;
-            startButton.Click += startButton_Click;
             // 
             // stopButton
             // 
@@ -139,6 +138,7 @@
             Controls.Add(menuStrip1);
             MainMenuStrip = menuStrip1;
             Name = "MainForm";
+            StartPosition = FormStartPosition.CenterScreen;
             Text = "MainForm";
             bottomPanel.ResumeLayout(false);
             ResumeLayout(false);
