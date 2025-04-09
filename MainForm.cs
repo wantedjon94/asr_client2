@@ -191,12 +191,12 @@ namespace ASR_Client2
             catch (OperationCanceledException)
             {
                 await UpdateStatusLabel("Прослушивание остановлено");
-                StopListening();
+                await StopListening();
             }
             catch (Exception ex)
             {
                 await UpdateStatusLabel($"Ошибка: {ex.Message}");
-                StopListening();
+                await StopListening();
             }
         }
 
@@ -213,7 +213,7 @@ namespace ASR_Client2
                     if (keywordIndex >= 0)
                     {
                         await UpdateStatusLabel("Команда распознана");
-                        StopListening();
+                        await StopListening();
 
                         await StartRecordingAsync();
                     }
@@ -294,8 +294,9 @@ namespace ASR_Client2
         private async Task<bool> ConnectToServerAsync()
         {
             int retryCount = 0;
+            int maxRetries = 3;
 
-            while (retryCount < 3)
+            while (retryCount < maxRetries)
             {
                 try
                 {
@@ -304,8 +305,6 @@ namespace ASR_Client2
                         await ws.ConnectAsync(new Uri(wwConfig.WebSocketUrl), cts.Token);
                         await SendConfiguration();
                         await UpdateStatusLabel("Получения сообщений...");
-
-                        _ = Task.Run(() => ReceiveMessages(cts.Token)); // Fire-and-forget
                         return true; // Exit if connection is successful
                     }
                 }
@@ -313,7 +312,7 @@ namespace ASR_Client2
                 {
                     await UpdateStatusLabel($"Ошибка подключения: {ex.Message}");
                     retryCount++;
-                    await Task.Delay(2000);
+                    await Task.Delay((int)Math.Pow(2, retryCount) * 1000); // Exponential backoff
                 }
                 catch (OperationCanceledException)
                 {
@@ -366,16 +365,16 @@ namespace ASR_Client2
 
         private async Task ReceiveMessages(CancellationToken cancellationToken)
         {
-
+            _ = LogMessageAsync("ReceiveMessages worked");
             var buffer = new byte[16384 * 4]; // 16KB buffer
             try
             {
-
-                while (ws?.State == WebSocketState.Open && !cts.IsCancellationRequested && (currentState == ApplicationState.Recording))
+                _ = LogMessageAsync($"ReceiveMessages worked and ws.State = {ws?.State} and currentStat = {currentState}");
+                while (ws?.State == WebSocketState.Open && !cancellationToken.IsCancellationRequested && (currentState == ApplicationState.Recording))
                 {
 
                     var result = await ws.ReceiveAsync(new ArraySegment<byte>(buffer), cts.Token);
-
+                    _ = LogMessageAsync($"ReceiveMessages worked and result = {result}");
 
                     if (result.MessageType == WebSocketMessageType.Close)
                     {
@@ -400,15 +399,17 @@ namespace ASR_Client2
 
         private void ProcessServerResponse(byte[] buffer, WebSocketReceiveResult result)
         {
+            _= LogMessageAsync("ProcessServerResponse worked");
 
             if (result.MessageType == WebSocketMessageType.Binary)
             {
+
                 ProcessAudioChunk(buffer, result.Count);
             }
             else if (result.MessageType == WebSocketMessageType.Text)
             {
                 var message = Encoding.UTF8.GetString(buffer, 0, result.Count);
-                HandleSpeechResult(message).ConfigureAwait(false);
+                _ = HandleSpeechResult(message).ConfigureAwait(false);
             }
 
         }
@@ -451,6 +452,7 @@ namespace ASR_Client2
 
         private void ProcessAudioChunk(byte[] buffer, int count)
         {
+
             try
             {
                 _ = LogMessageAsync("ProcessAudioChunk");
@@ -459,11 +461,24 @@ namespace ASR_Client2
                     waveProvider.ClearBuffer();
                 }
                 waveProvider.AddSamples(buffer, 0, count);
+
+                if(waveOut.PlaybackState != PlaybackState.Playing)
+                {
+                    waveOut.Init(waveProvider);
+                    waveOut.Play();
+                }
+               
+                //currentState = ApplicationState.Playing;
             }
             catch (Exception ex)
             {
+                if (waveOut.PlaybackState == PlaybackState.Playing)
+                {
+                    waveOut.Stop();
+                }
+               
                 waveProvider.ClearBuffer();
-                Debug.WriteLine($"Audio processing error: {ex.Message}");
+               
             }
         }
 
@@ -474,20 +489,22 @@ namespace ASR_Client2
                 PlayMp3InBackground(wwConfig.AudioFiles.Start);
 
                 // Ensure connection to the server
-                bool isConnected = await ConnectToServerAsync(); // Make this async
-
-                if (isConnected)
-                {
-                    waveIn.StartRecording();
-                    currentState = ApplicationState.Recording;
-                    await UpdateStatusLabel("Запись...");
-                    lastSpeechTime = DateTime.Now;
-                    await LogMessageAsync("StartRecording = " + lastSpeechTime.ToString());
-                }
-                else
+                bool isConnected = await ConnectToServerAsync();
+                if (!isConnected)
                 {
                     await UpdateStatusLabel("Не удалось подключиться к серверу.");
+                    return; // Exit if connection fails
                 }
+
+                // Start recording only after successful connection
+                waveIn.StartRecording();
+                currentState = ApplicationState.Recording;
+                await UpdateStatusLabel("Запись...");
+                lastSpeechTime = DateTime.Now;
+                await LogMessageAsync("StartRecording = " + lastSpeechTime.ToString());
+
+                // Start processing incoming messages
+                _ = Task.Run(() => ReceiveMessages(cts.Token)); // Fire-and-forget for receiving messages
             }
             catch (Exception ex)
             {
