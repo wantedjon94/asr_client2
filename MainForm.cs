@@ -14,6 +14,8 @@ using System.Diagnostics;
 using static System.Net.Mime.MediaTypeNames;
 using NAudio.Dsp;
 using NAudio.Gui;
+using System.Xml.Linq;
+using Svg;
 
 namespace ASR_Client2
 {
@@ -28,10 +30,10 @@ namespace ASR_Client2
         private DateTime lastSpeechTime;
         private const int SilenceTimeout = 10000; // 10 seconds
         private CancellationTokenSource cts;
-        private static BufferedWaveProvider waveProvider;
-        private WaveOutEvent waveOut;
         private Config wwConfig;
-
+        private ResponseAudioPlayer responseAudioPlayer;
+        private WaveformPainter waveformPainter;
+        private VoiceCircleVisualizer voiceVisualizer;
         public enum ApplicationState
         {
             Idle,
@@ -39,19 +41,24 @@ namespace ASR_Client2
             StopListening,
             StartRecording,
             StopRecording,
-            StartPlaying,
-            StopPlaying,
         }
 
         private ApplicationState currentState = ApplicationState.Idle;
+        private WakeWordDetector wakeWordDetector;
         // Add these class fields
-        private PlaybackState _currentPlaybackState = PlaybackState.Stopped;
-        private readonly object _playbackStateLock = new object();
 
         public MainForm()
         {
             InitializeComponent();
             LoadConfiguration();
+            SetupWakeWord();
+            voiceVisualizer = new VoiceCircleVisualizer
+            {
+                Dock = DockStyle.Top,
+                Height = 260,
+                Location = new Point(10, responseLabel.Height + 10)
+            };
+            flowLayoutPanel1.Controls.Add(voiceVisualizer);
 
         }
 
@@ -72,19 +79,35 @@ namespace ASR_Client2
                 Close();
             }
         }
+        private void SetupWakeWord()
+        {
+            wakeWordDetector = new WakeWordDetector(wwConfig);
+
+            wakeWordDetector.OnWakeWordDetected += async () =>
+            {
+                if (currentState == ApplicationState.StopListening)
+                {
+                    await StartRecordingAsync();
+                }
+                else
+                {
+                    await LogMessageAsync($"WakeWordDetectionLoop: Skipped StartRecordingAsync, invalid state={currentState}");
+                }
+            };
+
+            wakeWordDetector.OnStatusChanged += UpdateStatusLabel;
+            wakeWordDetector.OnLog += LogMessageAsync;
+        }
 
         private async void startButton_Click(object sender, EventArgs e)
         {
-
             try
             {
-                if (porcupine != null) porcupine?.Dispose(); // Already initialized
-                porcupine = null;
+                
                 InitializeComponents();
                 startButton.Enabled = false;
                 stopButton.Enabled = true;
-
-                await Task.Run(StartWakeWordDetection);
+                await wakeWordDetector.StartListeningAsync();
 
             }
             catch (Exception ex)
@@ -92,6 +115,7 @@ namespace ASR_Client2
                 MessageBox.Show($"Start failed: {ex.Message}");
                 startButton.Enabled = true;
                 stopButton.Enabled = false;
+                await wakeWordDetector.StopListeningAsync();
             }
 
         }
@@ -100,7 +124,7 @@ namespace ASR_Client2
             try
             {
                 await StopRecordingAsync(true);
-                await StopListening(true);
+                await wakeWordDetector.StopListeningAsync(full: true);
 
                 await CleanupResources();
 
@@ -118,37 +142,15 @@ namespace ASR_Client2
         {
             try
             {
-                ValidateKeywordFiles();
-
-                porcupine = Porcupine.FromKeywordPaths(
-                    accessKey: wwConfig.AccessKey,
-                    keywordPaths: wwConfig.WakeWordModels.ToArray(),
-                    modelPath: null,
-                    sensitivities: new float[] { 1.0f, 1.0f });
-
-                recorder = PvRecorder.Create(porcupine.FrameLength, -1);
-
                 waveIn = new WaveInEvent
                 {
                     WaveFormat = new WaveFormat(wwConfig.SampleRate, 16, 1),
                 };
                 waveIn.DataAvailable += OnAudioReceived;
                 waveIn.RecordingStopped += OnRecordingStopped;
-                waveOut = new WaveOutEvent();
-                waveProvider = new BufferedWaveProvider(new WaveFormat(48000, 16, 1))
-                {
-                    BufferDuration = TimeSpan.FromSeconds(30)
-                };
-                // Initialize this when you create your waveOut instance
-                waveOut.Init(waveProvider);
-                waveOut.PlaybackStopped += (sender, e) =>
-                {
-                    lock (_playbackStateLock)
-                    {
-                        _currentPlaybackState = PlaybackState.Stopped;
-                        _ = LogMessageAsync("Playback naturally completed").ConfigureAwait(false);
-                    }
-                };
+
+                responseAudioPlayer = new ResponseAudioPlayer(new WaveFormat(48000, 16, 1));
+
                 ws = new ClientWebSocket();
 
             }
@@ -157,6 +159,29 @@ namespace ASR_Client2
                 MessageBox.Show($"Initialization failed: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 Close();
 
+            }
+
+        }
+
+        private async Task InitializeWakeWord()
+        {
+            try
+            {
+                ValidateKeywordFiles();
+
+                porcupine = Porcupine.FromKeywordPaths(
+                    accessKey: wwConfig.AccessKey,
+                    keywordPaths: wwConfig.WakeWordModels.ToArray(),
+                    modelPath: null,
+                    sensitivities: new float[] { 1.0f });
+
+                recorder = PvRecorder.Create(porcupine.FrameLength, -1);
+
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Initialization failed: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                Close();
             }
 
         }
@@ -208,6 +233,7 @@ namespace ASR_Client2
 
             try
             {
+                await InitializeWakeWord();
 
                 cts?.Dispose();  // Clean up previous token source
                 cts = new CancellationTokenSource();
@@ -221,10 +247,9 @@ namespace ASR_Client2
 
                 if (recorder.IsRecording == false) recorder.Start();
                 currentState = ApplicationState.StartListening;
-                await Task.Delay(200);
+                await Task.Delay(100);
 
                 await WakeWordDetectionLoop(cts.Token).ConfigureAwait(false);
-                await LogMessageAsync("StartWakeWordDetection").ConfigureAwait(false);
 
             }
             catch (OperationCanceledException)
@@ -239,6 +264,8 @@ namespace ASR_Client2
 
         private async Task WakeWordDetectionLoop(CancellationToken cancellationToken)
         {
+            //await LogMessageAsync($"state={currentState}").ConfigureAwait(false);
+            await LogMessageAsync("StartWakeWordDetection").ConfigureAwait(false);
             while ((currentState == ApplicationState.StartListening) && recorder.IsRecording && !cancellationToken.IsCancellationRequested)
             {
 
@@ -247,13 +274,14 @@ namespace ASR_Client2
                     short[] pcmData = recorder.Read();
                     int keywordIndex = porcupine.Process(pcmData);
 
+                    //await LogMessageAsync($"keywords={keywordIndex}").ConfigureAwait(false);
                     if (keywordIndex >= 0)
                     {
-                        UpdateStatusLabel("Команда распознана");
+                        await LogMessageAsync("Команда распознана").ConfigureAwait(false);
 
                         await StopListening();
-                        await Task.Delay(300);
 
+                        //await LogMessageAsync($"state={currentState}").ConfigureAwait(false);
                         if (currentState == ApplicationState.StopListening)
                         {
                             await StartRecordingAsync().ConfigureAwait(false);
@@ -262,14 +290,15 @@ namespace ASR_Client2
                         {
                             await LogMessageAsync($"WakeWordDetectionLoop: Skipped StartRecordingAsync, invalid state={currentState}").ConfigureAwait(false);
                         }
-                        return;
+                        //await LogMessageAsync($"state={currentState}").ConfigureAwait(false);
 
+                        return;
                     }
                 }
                 catch (Exception ex)
                 {
                     Debug.WriteLine($"Wake word detection error: {ex.Message}");
-                    break; // Exit loop on error
+                    return;
                 }
             }
 
@@ -292,13 +321,13 @@ namespace ASR_Client2
 
         public async Task StopListening(bool full = false)
         {
-            if (currentState == ApplicationState.StartListening && currentState != ApplicationState.StartListening) return;
+            if (currentState == ApplicationState.StartListening && currentState != ApplicationState.StartListening && recorder == null) return;
             try
             {
                 // Stop the wake word detection
                 if (recorder.IsRecording)
                 {
-                    recorder?.Stop(); // Call the synchronous Stop method
+                    recorder.Stop(); // Call the synchronous Stop method
                 }
                 currentState = ApplicationState.StopListening;
                 await LogMessageAsync("StopListening: Successfully stopped.").ConfigureAwait(false);
@@ -315,6 +344,13 @@ namespace ASR_Client2
             finally
             {
                 UpdateStatusLabel("Остановлено распознование активационного слово.");
+
+                porcupine?.Dispose();
+                porcupine = null;
+
+                recorder?.Dispose();
+                recorder = null;
+
             }
         }
 
@@ -326,11 +362,32 @@ namespace ASR_Client2
 
                 if (ws.State != WebSocketState.Open || currentState == ApplicationState.StartListening || currentState == ApplicationState.StopListening || currentState != ApplicationState.StartRecording)
                     return;
-                
-                UpdatePlaybackState();
-                if (GetPlaybackState() == PlaybackState.Playing) return;
-                
+
+                if (responseAudioPlayer.PlaybackState == PlaybackState.Playing)
+                {
+                    lastSpeechTime = DateTime.Now;
+                    return;
+                }
+
                 await ws.SendAsync(new ArraySegment<byte>(e.Buffer, 0, e.BytesRecorded), WebSocketMessageType.Binary, true, ct);
+
+                int bytesPerSample = 2;
+                int sampleCount = e.BytesRecorded / bytesPerSample;
+
+                float max = 0;
+
+                for (int i = 0; i < sampleCount; i++)
+                {
+                    short sample = BitConverter.ToInt16(e.Buffer, i * 2);
+                    float sample32 = sample / 32768f;
+                    max = Math.Max(max, Math.Abs(sample32));
+                }
+
+                // Send volume level (0.0 to 1.0) to the circle
+                BeginInvoke(() =>
+                {
+                    voiceVisualizer.UpdateLevel(max);
+                });
 
             }
             catch (WebSocketException ex) when (ex.WebSocketErrorCode == WebSocketError.InvalidState)
@@ -443,7 +500,7 @@ namespace ASR_Client2
         {
             await LogMessageAsync("ReceiveMessages is working").ConfigureAwait(false);
 
-            var buffer = new byte[16384 * 4]; // 16KB buffer
+            byte[] buffer = new byte[16384 * 30]; //
             try
             {
 
@@ -459,7 +516,13 @@ namespace ASR_Client2
                         break;
                     }
 
-                    ProcessServerResponse(buffer, result);
+                    // Создаем новый массив нужного размера и копируем туда только полученные данные
+                    byte[] receivedData = new byte[result.Count];
+                    Array.Copy(buffer, 0, receivedData, 0, result.Count);
+
+                    //await LogMessageAsync(receivedData.Length.ToString()).ConfigureAwait(false);
+
+                    ProcessServerResponse(receivedData, result);
 
                 }
             }
@@ -480,10 +543,8 @@ namespace ASR_Client2
 
             if (result.MessageType == WebSocketMessageType.Binary)
             {
-                if (GetPlaybackState() != PlaybackState.Playing)
-                {
-                    ProcessAudioChunk(buffer, result.Count);
-                }
+
+                Task.Run(() => ProcessAudioChunkAsync(buffer, result.Count));
 
             }
             else if (result.MessageType == WebSocketMessageType.Text)
@@ -539,63 +600,54 @@ namespace ASR_Client2
 
         private void UpdatePlaybackState()
         {
-            if (waveProvider.BufferedDuration.TotalMilliseconds > 0)
-            {
-                // Audio is playing, so we set the state to Playing
-                SetPlaybackState(PlaybackState.Playing);
-            }
-            else
-            {
-                // No audio buffered, so we set the state to Stopped
-                SetPlaybackState(PlaybackState.Stopped);
-            }
+            //if (waveProvider.BufferedDuration.TotalMilliseconds > 0)
+            //{
+            //    // Audio is playing, so we set the state to Playing
+            //    lastSpeechTime = DateTime.Now;
+            //    SetPlaybackState(PlaybackState.Playing);
+            //}
+            //else
+            //{
+            //    // No audio buffered, so we set the state to Stopped
+            //    SetPlaybackState(PlaybackState.Stopped);
+            //}
         }
 
-        private void ProcessAudioChunk(byte[] buffer, int count)
+        private async Task ProcessAudioChunkAsync(byte[] buffer, int count)
         {
-
             try
             {
-
-                if (waveProvider.BufferedDuration.TotalSeconds > 30)
+                // 1. Validate input
+                if (buffer == null || count <= 0 || count > buffer.Length)
                 {
-                    waveProvider.ClearBuffer();
+                    await LogMessageAsync($"Invalid audio chunk: {buffer?.Length ?? 0} bytes, count={count}")
+                        .ConfigureAwait(false);
+                    return;
                 }
 
-                waveProvider.AddSamples(buffer, 0, count);
+                // 2. Calculate chunk duration (for 16-bit mono at 48kHz)
+                double chunkDurationMs = (double)count / (48000 * 2) * 1000;
 
-                if (GetPlaybackState() != PlaybackState.Playing)
+                // 3. Log chunk information
+                await LogMessageAsync($"Processing {chunkDurationMs:0.00}ms audio chunk ({count} bytes)")
+                    .ConfigureAwait(false);
+
+                // 4. Add chunk with automatic buffer management
+                responseAudioPlayer.AddAudioChunk(buffer, count, chunkDurationMs);
+
+                // 5. Auto-start playback if not already playing (optional)
+                if (responseAudioPlayer.PlaybackState == PlaybackState.Stopped)
                 {
-                    waveOut.Play();
-                    _ = LogMessageAsync("Playing received audio").ConfigureAwait(false);
-
+                    responseAudioPlayer.Start();
                 }
-
             }
             catch (Exception ex)
             {
-                waveOut.Stop();
-                _ = Task.Delay(500); // немного подождать перед очисткой буфера
-                waveProvider.ClearBuffer();
-            }
-
-        }
-
-        private PlaybackState GetPlaybackState()
-        {
-            lock (_playbackStateLock)
-            {
-                return _currentPlaybackState;
+                //await HandleAudioChunkError(buffer, count, ex).ConfigureAwait(false);
             }
         }
 
-        private void SetPlaybackState(PlaybackState state)
-        {
-            lock (_playbackStateLock)
-            {
-                _currentPlaybackState = state;
-            }
-        }
+
         private async Task StartRecordingAsync()
         {
 
@@ -623,13 +675,13 @@ namespace ASR_Client2
                     Debug.WriteLine($"Ошибка запуска записи: {ex.Message}");
                     throw;
                 }
-                await LogMessageAsync(currentState.ToString()).ConfigureAwait(false);
+
                 UpdateStatusLabel("Говорите...");
                 lastSpeechTime = DateTime.Now;
                 await LogMessageAsync(lastSpeechTime.ToString()).ConfigureAwait(false);
 
                 // Start processing incoming messages
-                await Task.Run(() => ReceiveMessages(cts.Token));
+                _ = Task.Run(() => ReceiveMessages(cts.Token));
             }
             catch (Exception ex)
             {
@@ -683,14 +735,6 @@ namespace ASR_Client2
             {
                 cts?.Cancel();
 
-                // Stop and dispose audio resources
-                waveIn?.Dispose();
-
-                recorder?.Dispose();
-
-                porcupine?.Dispose();
-
-
                 // Handle WebSocket
                 if (ws != null)
                 {
@@ -706,8 +750,17 @@ namespace ASR_Client2
                     ws.Dispose();
                 }
 
-                waveOut?.Stop();
-                waveOut?.Dispose();
+                // Stop and dispose audio resources
+                waveIn?.Dispose();
+
+                recorder?.Dispose();
+
+                porcupine?.Dispose();
+
+
+
+                //waveOut?.Stop();
+                //waveOut?.Dispose();
             }
             catch (Exception ex)
             {
@@ -753,10 +806,41 @@ namespace ASR_Client2
 
         protected override async void OnFormClosing(FormClosingEventArgs e)
         {
+            await StopListening(true);
+            await StopRecordingAsync(true);
             await CleanupResources();
             base.OnFormClosing(e);
         }
 
+        private void waveformPainter1_Click(object sender, EventArgs e)
+        {
+
+        }
+
+        private void LoadSvgToButton(Button button, string svgPath)
+        {
+            try
+            {
+                // Load the SVG file
+                SvgDocument svgDoc = SvgDocument.Open(svgPath);
+
+                // Optionally set a size (you can use svgDoc.Width and Height if set in the SVG)
+                svgDoc.Width = 48;
+                svgDoc.Height = 48;
+
+                // Render to bitmap
+                Bitmap bmp = svgDoc.Draw();
+
+                // Assign to button
+                button.Image = bmp;
+                button.ImageAlign = ContentAlignment.MiddleLeft; // or Center, TopCenter etc.
+                button.TextImageRelation = TextImageRelation.ImageBeforeText;
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Failed to load SVG: {ex.Message}");
+            }
+        }
     }
 
     public class Config
