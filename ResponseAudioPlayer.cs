@@ -1,5 +1,6 @@
 ﻿using NAudio.Wave;
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 
 namespace ASR_Client2
@@ -11,14 +12,19 @@ namespace ASR_Client2
         private WaveOutEvent _waveOut;
         private bool _disposed;
 
-        // Dynamic buffer configuration
         private int _currentTargetBufferMs = 1000;
         private const int MinBufferMs = 300;
         private const int MaxBufferMs = 5000;
         private bool _hasAudioToPlay = false;
+        private WaveFormat _originalFormat;
+
         public event EventHandler<PlaybackState> PlaybackStateChanged;
         private System.Timers.Timer _playbackMonitorTimer;
+        private System.Timers.Timer _chunkQueueDrainTimer;
         private DateTime? _bufferBecameEmptyAt = null;
+
+        // Очередь для хранения чанков, которые не удалось сразу добавить
+        private readonly Queue<(byte[] data, int length, double durationMs)> _pendingChunks = new();
 
         public PlaybackState PlaybackState
         {
@@ -33,6 +39,7 @@ namespace ASR_Client2
 
         public ResponseAudioPlayer(WaveFormat format, bool autoStart = false)
         {
+            _originalFormat = format;
             Initialize(format, _currentTargetBufferMs);
             if (autoStart)
             {
@@ -42,9 +49,8 @@ namespace ASR_Client2
 
         private void OnPlaybackStateChanged()
         {
-            // Get state under lock to ensure consistency
             var state = PlaybackState;
-            Debug.WriteLine($"Playback state changed to: {state}");
+            //Debug.WriteLine($"Playback state changed to: {state}");
             PlaybackStateChanged?.Invoke(this, state);
         }
 
@@ -54,6 +60,7 @@ namespace ASR_Client2
             {
                 if (_waveOut != null && _waveOut.PlaybackState == PlaybackState.Stopped)
                 {
+                    _waveProvider.ClearBuffer(); // Очистить буфер перед началом
                     _waveOut.Play();
                     OnPlaybackStateChanged();
                 }
@@ -66,7 +73,7 @@ namespace ASR_Client2
             {
                 _waveProvider = new BufferedWaveProvider(format)
                 {
-                    BufferDuration = TimeSpan.FromMilliseconds(bufferDurationMs * 1.5),
+                    BufferDuration = TimeSpan.FromMilliseconds(bufferDurationMs * 5),
                     DiscardOnBufferOverflow = false
                 };
 
@@ -77,14 +84,20 @@ namespace ASR_Client2
                 };
 
                 _waveOut.Init(_waveProvider);
-                _playbackMonitorTimer = new System.Timers.Timer(100); // check every 100ms
+
+                _playbackMonitorTimer = new System.Timers.Timer(100);
                 _playbackMonitorTimer.Elapsed += (s, e) => MonitorBuffer();
                 _playbackMonitorTimer.Start();
+
+                _chunkQueueDrainTimer = new System.Timers.Timer(50);
+                _chunkQueueDrainTimer.Elapsed += (s, e) => DrainPendingChunks();
+                _chunkQueueDrainTimer.Start();
+
                 _waveOut.PlaybackStopped += (sender, e) =>
                 {
                     lock (_syncLock)
                     {
-                        _hasAudioToPlay = _waveProvider.BufferedDuration.TotalMilliseconds > 0;
+                        _hasAudioToPlay = _waveProvider?.BufferedDuration.TotalMilliseconds > 0;
                         OnPlaybackStateChanged();
                     }
                 };
@@ -98,7 +111,7 @@ namespace ASR_Client2
                 if (_waveProvider == null || _waveOut == null)
                     return;
 
-                var bufferedMs = _waveProvider.BufferedDuration.TotalMilliseconds;
+                double bufferedMs = _waveProvider.BufferedDuration.TotalMilliseconds;
 
                 if (bufferedMs <= 0)
                 {
@@ -106,20 +119,16 @@ namespace ASR_Client2
                     {
                         _bufferBecameEmptyAt = DateTime.UtcNow;
                     }
-                    else
+                    else if ((DateTime.UtcNow - _bufferBecameEmptyAt.Value).TotalMilliseconds >= 1000) // Увеличил таймаут до 1 секунды
                     {
-                        // Wait 250ms after buffer becomes empty
-                        if ((DateTime.UtcNow - _bufferBecameEmptyAt.Value).TotalMilliseconds >= 250 &&
-                            _waveOut.PlaybackState == PlaybackState.Playing)
-                        {
-                            _waveOut.Stop(); // This triggers PlaybackStopped
-                            _bufferBecameEmptyAt = null;
-                        }
+                        _waveOut.Stop();
+                        _bufferBecameEmptyAt = null;
+                        _hasAudioToPlay = false;
                     }
                 }
                 else
                 {
-                    _bufferBecameEmptyAt = null; // Reset if buffer has data again
+                    _bufferBecameEmptyAt = null;
                 }
             }
         }
@@ -132,38 +141,68 @@ namespace ASR_Client2
             {
                 try
                 {
-                    double durationMs = chunkDurationMs ??
-                        CalculateDurationMs(bytesRecorded, _waveProvider.WaveFormat);
+                    double durationMs = chunkDurationMs ?? CalculateDurationMs(bytesRecorded, _waveProvider.WaveFormat);
+                    double totalBufferedMs = _waveProvider.BufferedDuration.TotalMilliseconds + durationMs;
 
+                    Debug.WriteLine($"Adding chunk: {bytesRecorded} bytes, {durationMs:F2} ms, Buffered: {totalBufferedMs:F2} ms");
 
-                    if (durationMs > _currentTargetBufferMs * 0.8)
+                    if (totalBufferedMs <= _waveProvider.BufferDuration.TotalMilliseconds * 0.9)
                     {
-                        int newBufferSize = (int)Math.Clamp(durationMs * 1.5, MinBufferMs, MaxBufferMs);
-                        if (newBufferSize != _currentTargetBufferMs)
+                        _waveProvider.AddSamples(audioData, 0, bytesRecorded);
+                        _hasAudioToPlay = true;
+                        Debug.WriteLine("Chunk added directly to buffer");
+                    }
+                    else
+                    {
+                        _pendingChunks.Enqueue((audioData, bytesRecorded, durationMs));
+                        Debug.WriteLine($"Chunk enqueued, Queue size: {_pendingChunks.Count}");
+                        int newTarget = (int)Math.Clamp(totalBufferedMs * 1.5, MinBufferMs, MaxBufferMs);
+                        if (newTarget > _currentTargetBufferMs)
                         {
-                            ReinitializeWithNewBuffer(newBufferSize);
+                            ReinitializeWithNewBuffer(newTarget);
                         }
                     }
 
-                    if (_waveProvider.BufferedDuration.TotalMilliseconds + durationMs >
-                        _waveProvider.BufferDuration.TotalMilliseconds)
-                    {
-                        _waveProvider.ClearBuffer();
-                    }
-
-                    _waveProvider.AddSamples(audioData, 0, bytesRecorded);
-                    _hasAudioToPlay = true;
-
-                    // Auto - play only if we have audio and not already playing
                     if (_hasAudioToPlay && _waveOut.PlaybackState != PlaybackState.Playing)
                     {
                         _waveOut.Play();
+                        Debug.WriteLine("Playback started");
                     }
+
+                    DrainPendingChunks();
                 }
                 catch (Exception ex)
                 {
-                    Debug.WriteLine($"Error adding chunk: {ex.Message}");
+                    Debug.WriteLine($"[Error] Adding chunk: {ex}");
                     ReinitializeWithNewBuffer(_currentTargetBufferMs);
+                }
+            }
+        }
+
+
+        private void DrainPendingChunks()
+        {
+            lock (_syncLock)
+            {
+                if (_waveProvider == null) return;
+
+                while (_pendingChunks.Count > 0)
+                {
+                    var (data, length, durationMs) = _pendingChunks.Peek();
+                    double totalBufferedMs = _waveProvider.BufferedDuration.TotalMilliseconds + durationMs;
+
+                    if (totalBufferedMs > _waveProvider.BufferDuration.TotalMilliseconds * 0.9)
+                        break;
+
+                    _waveProvider.AddSamples(data, 0, length);
+                    _pendingChunks.Dequeue();
+                    _hasAudioToPlay = true;
+                }
+
+                // Убедитесь, что воспроизведение начнется только после добавления данных
+                if (_hasAudioToPlay && _waveOut.PlaybackState != PlaybackState.Playing)
+                {
+                    _waveOut.Play();
                 }
             }
         }
@@ -172,10 +211,23 @@ namespace ASR_Client2
         {
             lock (_syncLock)
             {
+                // Сохранить текущие данные из буфера
+                var bufferedBytes = new byte[_waveProvider.BufferedBytes];
+                _waveProvider.Read(bufferedBytes, 0, _waveProvider.BufferedBytes);
+
                 _currentTargetBufferMs = newBufferMs;
-                var format = _waveProvider?.WaveFormat ?? new WaveFormat(44100, 16, 2);
                 Cleanup();
-                Initialize(format, newBufferMs);
+                Initialize(_originalFormat, newBufferMs);
+
+                // Восстановить сохраненные данные
+                if (bufferedBytes.Length > 0)
+                {
+                    _waveProvider.AddSamples(bufferedBytes, 0, bufferedBytes.Length);
+                    _hasAudioToPlay = true;
+                }
+
+                // Добавить данные из очереди
+                DrainPendingChunks();
             }
         }
 
@@ -190,10 +242,17 @@ namespace ASR_Client2
             _playbackMonitorTimer?.Dispose();
             _playbackMonitorTimer = null;
 
+            _chunkQueueDrainTimer?.Stop();
+            _chunkQueueDrainTimer?.Dispose();
+            _chunkQueueDrainTimer = null;
+
             _waveOut?.Stop();
             _waveOut?.Dispose();
+            _waveOut = null;
+
             _waveProvider = null;
 
+            _pendingChunks.Clear();
         }
 
         public void Dispose()
@@ -205,6 +264,5 @@ namespace ASR_Client2
                 Cleanup();
             }
         }
-
     }
 }

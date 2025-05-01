@@ -16,24 +16,22 @@ using NAudio.Dsp;
 using NAudio.Gui;
 using System.Xml.Linq;
 using Svg;
+using static System.Windows.Forms.VisualStyles.VisualStyleElement;
+using Application = System.Windows.Forms.Application;
 
 namespace ASR_Client2
 {
     public partial class MainForm : Form
     {
-        private Porcupine porcupine;
-        private PvRecorder recorder;
         private WaveInEvent waveIn;
         private ClientWebSocket ws;
-        private bool isRecording = false;
-        private bool isListening = false;
         private DateTime lastSpeechTime;
-        private const int SilenceTimeout = 10000; // 10 seconds
+        private const int SilenceTimeout = 5000; // 10 seconds
         private CancellationTokenSource cts;
         private Config wwConfig;
         private ResponseAudioPlayer responseAudioPlayer;
-        private WaveformPainter waveformPainter;
         private VoiceCircleVisualizer voiceVisualizer;
+        private SpeechController speechController;
         public enum ApplicationState
         {
             Idle,
@@ -47,11 +45,18 @@ namespace ASR_Client2
         private WakeWordDetector wakeWordDetector;
         // Add these class fields
 
+
         public MainForm()
         {
             InitializeComponent();
+
+            // Initialize contextMenu1
+            
+
+            // Handle the DoubleClick event to activate the form.
+            notifyIcon1.DoubleClick += new EventHandler(notifyIcon1_DoubleClick);
+
             LoadConfiguration();
-            SetupWakeWord();
             voiceVisualizer = new VoiceCircleVisualizer
             {
                 Dock = DockStyle.Top,
@@ -62,6 +67,21 @@ namespace ASR_Client2
 
         }
 
+        private void notifyIcon1_DoubleClick(object? sender, EventArgs e)
+        {
+            // Show the form when the user double clicks on the notify icon.
+            //MessageBox.Show(this.WindowState.ToString());
+            // Set the WindowState to normal if the form is minimized.
+            if (this.WindowState == FormWindowState.Minimized)
+            {
+                this.Show();
+                this.WindowState = FormWindowState.Normal;
+            }
+                            
+            // Activate the form.
+            this.Activate();
+        }
+
         private async void LoadConfiguration()
         {
             try
@@ -70,6 +90,9 @@ namespace ASR_Client2
                 var jsonContent = await File.ReadAllTextAsync("config.json");
                 wwConfig = JsonConvert.DeserializeObject<Config>(jsonContent);
                 stopButton.Enabled = false;
+
+                //SetupController();
+                SetupWakeWord();
             }
             catch (Exception ex)
             {
@@ -78,15 +101,31 @@ namespace ASR_Client2
                 stopButton.Enabled = false;
                 Close();
             }
+
+        }
+        private void SetupController()
+        {
+            speechController = new SpeechController(wwConfig);
+            speechController.OnStatusChanged += UpdateStatusLabel;
+            speechController.OnLog += LogMessageAsync;
+            speechController.OnFinalText += UpdateResponseLabel;
+
+            // Подписка на изменение состояния
+            speechController.OnStateChanged += (state) =>
+            {
+                currentState = state; // 💡 теперь мы получаем актуальное состояние
+                Debug.WriteLine($"Текущее состояние: {state}");
+            };
         }
         private void SetupWakeWord()
         {
             wakeWordDetector = new WakeWordDetector(wwConfig);
 
             wakeWordDetector.OnWakeWordDetected += async () =>
-            {
+            {   
                 if (currentState == ApplicationState.StopListening)
                 {
+                   
                     await StartRecordingAsync();
                 }
                 else
@@ -94,7 +133,10 @@ namespace ASR_Client2
                     await LogMessageAsync($"WakeWordDetectionLoop: Skipped StartRecordingAsync, invalid state={currentState}");
                 }
             };
-
+            wakeWordDetector.OnStateChanged += (state) =>
+            {
+                currentState = state;
+            };
             wakeWordDetector.OnStatusChanged += UpdateStatusLabel;
             wakeWordDetector.OnLog += LogMessageAsync;
         }
@@ -103,19 +145,25 @@ namespace ASR_Client2
         {
             try
             {
-                
+                if (!IsMicrophoneAvailable())
+                {
+                    return;
+                }
                 InitializeComponents();
+
                 startButton.Enabled = false;
                 stopButton.Enabled = true;
-                await wakeWordDetector.StartListeningAsync();
 
+                // Выполнение асинхронной операции без блокировки UI потока
+                await Task.Run(wakeWordDetector.StartListeningAsync);
+
+                //await speechController.StartAsync();
             }
             catch (Exception ex)
             {
                 MessageBox.Show($"Start failed: {ex.Message}");
-                startButton.Enabled = true;
-                stopButton.Enabled = false;
-                await wakeWordDetector.StopListeningAsync();
+                // Если произошла ошибка, вызовем stopButton_Click для остановки процессов
+                stopButton_Click(this, EventArgs.Empty);  // Вызов обработчика события Stop
             }
 
         }
@@ -125,10 +173,9 @@ namespace ASR_Client2
             {
                 await StopRecordingAsync(true);
                 await wakeWordDetector.StopListeningAsync(full: true);
-
+                //await speechController.StopAsync();
                 await CleanupResources();
 
-                currentState = ApplicationState.Idle;
                 startButton.Enabled = true;
                 stopButton.Enabled = false;
             }
@@ -149,7 +196,7 @@ namespace ASR_Client2
                 waveIn.DataAvailable += OnAudioReceived;
                 waveIn.RecordingStopped += OnRecordingStopped;
 
-                responseAudioPlayer = new ResponseAudioPlayer(new WaveFormat(48000, 16, 1));
+                responseAudioPlayer = new ResponseAudioPlayer(new WaveFormat(44100, 16, 1));
 
                 ws = new ClientWebSocket();
 
@@ -163,27 +210,44 @@ namespace ASR_Client2
 
         }
 
-        private async Task InitializeWakeWord()
+        private bool IsMicrophoneAvailable()
         {
             try
             {
-                ValidateKeywordFiles();
+                // Получаем количество доступных устройств ввода
+                int waveInDevices = WaveInEvent.DeviceCount;
 
-                porcupine = Porcupine.FromKeywordPaths(
-                    accessKey: wwConfig.AccessKey,
-                    keywordPaths: wwConfig.WakeWordModels.ToArray(),
-                    modelPath: null,
-                    sensitivities: new float[] { 1.0f });
+                if (waveInDevices == 0)
+                {
+                    // Нет доступных устройств ввода
+                    MessageBox.Show("Устройств ввода (микрофонов) не найдено.", "Ошибка", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    return false;
+                }
 
-                recorder = PvRecorder.Create(porcupine.FrameLength, -1);
+                // Проверка каждого устройства ввода
+                for (int i = 0; i < waveInDevices; i++)
+                {
+                    // Получаем информацию об устройстве ввода
+                    var deviceInfo = WaveInEvent.GetCapabilities(i);
 
+                    // Проверка, является ли устройство микрофоном (можно по имени устройства или другим характеристикам)
+                    if (deviceInfo.ProductName.ToLower().Contains("microphone") || (deviceInfo.ProductName.ToLower().Contains("микрофон")))
+                    {
+                        // Найдено устройство микрофона
+                        return true;
+                    }
+                }
+
+                // Если устройства микрофона не нашли
+                MessageBox.Show("Микрофон не найден.", "Ошибка", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return false;
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"Initialization failed: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                Close();
+                // Обработка ошибки
+                MessageBox.Show($"Ошибка проверки устройств: {ex.Message}", "Ошибка", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return false;
             }
-
         }
 
         private async void OnRecordingStopped(object sender, StoppedEventArgs e)
@@ -227,82 +291,6 @@ namespace ASR_Client2
             UpdateLabel(responseLabel, text);
         }
 
-        private async Task StartWakeWordDetection()
-        {
-            if (currentState == ApplicationState.StartListening && (currentState != ApplicationState.StopRecording || currentState != ApplicationState.Idle)) return;
-
-            try
-            {
-                await InitializeWakeWord();
-
-                cts?.Dispose();  // Clean up previous token source
-                cts = new CancellationTokenSource();
-
-                UpdateStatusLabel("Ожидание активационной команды...");
-
-                if (recorder == null)
-                {
-                    return;
-                }
-
-                if (recorder.IsRecording == false) recorder.Start();
-                currentState = ApplicationState.StartListening;
-                await Task.Delay(100);
-
-                await WakeWordDetectionLoop(cts.Token).ConfigureAwait(false);
-
-            }
-            catch (OperationCanceledException)
-            {
-                UpdateStatusLabel("Прослушивание остановлено");
-            }
-            catch (Exception ex)
-            {
-                UpdateStatusLabel($"Ошибка: {ex.Message}");
-            }
-        }
-
-        private async Task WakeWordDetectionLoop(CancellationToken cancellationToken)
-        {
-            //await LogMessageAsync($"state={currentState}").ConfigureAwait(false);
-            await LogMessageAsync("StartWakeWordDetection").ConfigureAwait(false);
-            while ((currentState == ApplicationState.StartListening) && recorder.IsRecording && !cancellationToken.IsCancellationRequested)
-            {
-
-                try
-                {
-                    short[] pcmData = recorder.Read();
-                    int keywordIndex = porcupine.Process(pcmData);
-
-                    //await LogMessageAsync($"keywords={keywordIndex}").ConfigureAwait(false);
-                    if (keywordIndex >= 0)
-                    {
-                        await LogMessageAsync("Команда распознана").ConfigureAwait(false);
-
-                        await StopListening();
-
-                        //await LogMessageAsync($"state={currentState}").ConfigureAwait(false);
-                        if (currentState == ApplicationState.StopListening)
-                        {
-                            await StartRecordingAsync().ConfigureAwait(false);
-                        }
-                        else
-                        {
-                            await LogMessageAsync($"WakeWordDetectionLoop: Skipped StartRecordingAsync, invalid state={currentState}").ConfigureAwait(false);
-                        }
-                        //await LogMessageAsync($"state={currentState}").ConfigureAwait(false);
-
-                        return;
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Debug.WriteLine($"Wake word detection error: {ex.Message}");
-                    return;
-                }
-            }
-
-        }
 
         private async Task LogMessageAsync(string message)
         {
@@ -315,44 +303,19 @@ namespace ASR_Client2
             else
             {
                 textBox1.AppendText(formattedMessage);
-            }
-        }
+                // Получаем все строки из TextBox
+                string[] lines = textBox1.Lines;
 
-
-        public async Task StopListening(bool full = false)
-        {
-            if (currentState == ApplicationState.StartListening && currentState != ApplicationState.StartListening && recorder == null) return;
-            try
-            {
-                // Stop the wake word detection
-                if (recorder.IsRecording)
+                // Проверяем, если последняя строка пуста или состоит только из пробелов
+                if (lines.Length > 0 && string.IsNullOrWhiteSpace(lines[lines.Length - 1]))
                 {
-                    recorder.Stop(); // Call the synchronous Stop method
-                }
-                currentState = ApplicationState.StopListening;
-                await LogMessageAsync("StopListening: Successfully stopped.").ConfigureAwait(false);
-
-                if (full)
-                {
-                    currentState = ApplicationState.Idle;
+                    // Созд1аем новый массив строк, исключив последнюю пустую строку
+                    textBox1.Lines = lines.Take(lines.Length - 1).ToArray();
                 }
             }
-            catch (Exception ex)
-            {
-                UpdateStatusLabel($"Ошибка остановки: {ex.Message}");
-            }
-            finally
-            {
-                UpdateStatusLabel("Остановлено распознование активационного слово.");
 
-                porcupine?.Dispose();
-                porcupine = null;
-
-                recorder?.Dispose();
-                recorder = null;
-
-            }
         }
+
 
         private async void OnAudioReceived(object sender, WaveInEventArgs e)
         {
@@ -409,10 +372,15 @@ namespace ASR_Client2
             int retryCount = 0;
             int maxRetries = 3;
 
+            cts?.Dispose();
+            cts = new CancellationTokenSource();
+
             while (retryCount < maxRetries)
             {
+                
                 try
                 {
+                    lastSpeechTime = DateTime.Now;
                     if (ws != null)
                     {
 
@@ -421,8 +389,9 @@ namespace ASR_Client2
                             ws.Dispose();
                             ws = new ClientWebSocket(); // Reinitialize WebSocket
                         }
-                        if (ws.State != WebSocketState.Open)
+                        if (ws.State != WebSocketState.Open || ws.State != WebSocketState.Connecting)
                         {
+                            
                             await ws.ConnectAsync(new Uri(wwConfig.WebSocketUrl), cts.Token);
                             await SendConfiguration();
 
@@ -507,8 +476,10 @@ namespace ASR_Client2
                 while (ws?.State == WebSocketState.Open && !cancellationToken.IsCancellationRequested && (currentState == ApplicationState.StartRecording))
                 {
 
-                    var result = await ws.ReceiveAsync(new ArraySegment<byte>(buffer), cts.Token);
+                    var result = await ws.ReceiveAsync(new ArraySegment<byte>(buffer), cancellationToken);
 
+                    // ⛔ Проверка, не отменили ли выполнение прямо после await
+                    cancellationToken.ThrowIfCancellationRequested();
 
                     if (result.MessageType == WebSocketMessageType.Close)
                     {
@@ -543,12 +514,13 @@ namespace ASR_Client2
 
             if (result.MessageType == WebSocketMessageType.Binary)
             {
-
+                lastSpeechTime = DateTime.Now;
                 Task.Run(() => ProcessAudioChunkAsync(buffer, result.Count));
 
             }
             else if (result.MessageType == WebSocketMessageType.Text)
             {
+
                 var message = Encoding.UTF8.GetString(buffer, 0, result.Count);
                 _ = HandleSpeechResult(message).ConfigureAwait(false);
             }
@@ -598,21 +570,6 @@ namespace ASR_Client2
             }
         }
 
-        private void UpdatePlaybackState()
-        {
-            //if (waveProvider.BufferedDuration.TotalMilliseconds > 0)
-            //{
-            //    // Audio is playing, so we set the state to Playing
-            //    lastSpeechTime = DateTime.Now;
-            //    SetPlaybackState(PlaybackState.Playing);
-            //}
-            //else
-            //{
-            //    // No audio buffered, so we set the state to Stopped
-            //    SetPlaybackState(PlaybackState.Stopped);
-            //}
-        }
-
         private async Task ProcessAudioChunkAsync(byte[] buffer, int count)
         {
             try
@@ -626,7 +583,7 @@ namespace ASR_Client2
                 }
 
                 // 2. Calculate chunk duration (for 16-bit mono at 48kHz)
-                double chunkDurationMs = (double)count / (48000 * 2) * 1000;
+                double chunkDurationMs = (double)count / (44100 * 2) * 1000;
 
                 // 3. Log chunk information
                 await LogMessageAsync($"Processing {chunkDurationMs:0.00}ms audio chunk ({count} bytes)")
@@ -646,7 +603,6 @@ namespace ASR_Client2
                 //await HandleAudioChunkError(buffer, count, ex).ConfigureAwait(false);
             }
         }
-
 
         private async Task StartRecordingAsync()
         {
@@ -669,6 +625,13 @@ namespace ASR_Client2
                 {
                     waveIn.StartRecording();
                     currentState = ApplicationState.StartRecording;
+
+                    UpdateStatusLabel("Говорите...");
+                    lastSpeechTime = DateTime.Now;
+                    await LogMessageAsync(lastSpeechTime.ToString()).ConfigureAwait(false);
+
+                    // Start processing incoming messages
+                    _ = Task.Run(() => ReceiveMessages(cts.Token));
                 }
                 catch (Exception ex)
                 {
@@ -676,12 +639,6 @@ namespace ASR_Client2
                     throw;
                 }
 
-                UpdateStatusLabel("Говорите...");
-                lastSpeechTime = DateTime.Now;
-                await LogMessageAsync(lastSpeechTime.ToString()).ConfigureAwait(false);
-
-                // Start processing incoming messages
-                _ = Task.Run(() => ReceiveMessages(cts.Token));
             }
             catch (Exception ex)
             {
@@ -700,9 +657,9 @@ namespace ASR_Client2
                 // Make sure waveIn is initialized
                 if (waveIn != null)
                 {
+                    //MessageBox.Show(waveIn.DeviceNumber.ToString());
                     // Stop the recording
                     waveIn.StopRecording();
-
                 }
                 else
                 {
@@ -724,7 +681,7 @@ namespace ASR_Client2
                 {
                     await Task.Delay(1000);
                     // Restart wake word detection
-                    await StartWakeWordDetection();
+                    await wakeWordDetector.StartListeningAsync();
                 }
             }
         }
@@ -733,58 +690,78 @@ namespace ASR_Client2
         {
             try
             {
-                cts?.Cancel();
-
-                // Handle WebSocket
-                if (ws != null)
+                // Отмена текущих операций
+                if (cts != null && !cts.IsCancellationRequested)
                 {
-                    if (ws.State == WebSocketState.Open || ws.State == WebSocketState.CloseReceived)
-                    {
-                        await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "Closing", CancellationToken.None);
-                        await LogMessageAsync("WebSocket closed successfully.").ConfigureAwait(false);
-                    }
-                    else
-                    {
-                        await LogMessageAsync($"WebSocket state during cleanup: {ws.State}").ConfigureAwait(false);
-                    }
-                    ws.Dispose();
+                    cts.Cancel();
                 }
 
-                // Stop and dispose audio resources
-                waveIn?.Dispose();
+                // Завершение WebSocket
+                if (ws != null)
+                {
+                    try
+                    {
+                        if (ws.State == WebSocketState.Open || ws.State == WebSocketState.CloseReceived)
+                        {
+                            await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "Closing", CancellationToken.None).ConfigureAwait(false);
+                            await LogMessageAsync("WebSocket closed successfully.").ConfigureAwait(false);
+                        }
+                        else
+                        {
+                            await LogMessageAsync($"WebSocket state during cleanup: {ws.State}").ConfigureAwait(false);
+                        }
+                    }
+                    catch (WebSocketException wse)
+                    {
+                        await LogMessageAsync($"WebSocketException during close: {wse.Message}").ConfigureAwait(false);
+                    }
+                    catch (Exception ex)
+                    {
+                        await LogMessageAsync($"Unexpected exception during WebSocket close: {ex.Message}").ConfigureAwait(false);
+                    }
+                    finally
+                    {
+                        try
+                        {
+                            ws.Dispose();
+                        }
+                        catch (Exception disposeEx)
+                        {
+                            LogError($"WebSocket dispose error: {disposeEx.Message}");
+                        }
 
-                recorder?.Dispose();
+                        ws = null;
+                    }
+                }
 
-                porcupine?.Dispose();
-
-
-
-                //waveOut?.Stop();
-                //waveOut?.Dispose();
+                // Завершение и очистка микрофона
+                if (waveIn != null)
+                {
+                    try
+                    {
+                        waveIn.Dispose();
+                    }
+                    catch (Exception ex)
+                    {
+                        LogError($"WaveIn dispose error: {ex.Message}");
+                    }
+                    finally
+                    {
+                        waveIn = null;
+                    }
+                }
             }
             catch (Exception ex)
             {
-                LogError($"Cleanup error: {ex.Message}");
+                LogError($"Cleanup error: {ex}");
             }
             finally
             {
-                cts = null; // Ensure CancellationTokenSource is reset
-                ws = null; // Ensure WebSocket is null for reuse
+                cts?.Dispose();
+                cts = null;
             }
         }
 
-
-        private void ValidateKeywordFiles()
-        {
-            foreach (var keywordPath in wwConfig.WakeWordModels)
-            {
-                if (!File.Exists(keywordPath))
-                {
-                    MessageBox.Show($"Keyword file not found at: {keywordPath}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                    throw new FileNotFoundException($"Keyword file not found: {keywordPath}");
-                }
-            }
-        }
 
         private void LogError(string message)
         {
@@ -806,18 +783,16 @@ namespace ASR_Client2
 
         protected override async void OnFormClosing(FormClosingEventArgs e)
         {
-            await StopListening(true);
+            await wakeWordDetector.StopListeningAsync(true);
+            wakeWordDetector?.Dispose();
             await StopRecordingAsync(true);
             await CleanupResources();
+            //speechController.Dispose();
             base.OnFormClosing(e);
         }
 
-        private void waveformPainter1_Click(object sender, EventArgs e)
-        {
 
-        }
-
-        private void LoadSvgToButton(Button button, string svgPath)
+        private void LoadSvgToButton(System.Windows.Forms.Button button, string svgPath)
         {
             try
             {
@@ -839,6 +814,21 @@ namespace ASR_Client2
             catch (Exception ex)
             {
                 MessageBox.Show($"Failed to load SVG: {ex.Message}");
+            }
+        }
+
+
+        private void MainForm_SizeChanged(object sender, EventArgs e)
+        {
+            if (this.WindowState == FormWindowState.Minimized)
+            {
+                notifyIcon1.Visible = true;
+                this.Hide();
+                notifyIcon1.Icon = SystemIcons.Application;
+                notifyIcon1.ShowBalloonTip(500, "Приложение свернуто", "Двойной клик по иконке - открыть.", ToolTipIcon.Info);
+            }else if (this.WindowState == FormWindowState.Normal)
+            {
+                notifyIcon1.Visible = false;
             }
         }
     }

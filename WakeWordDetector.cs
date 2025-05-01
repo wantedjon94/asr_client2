@@ -13,48 +13,54 @@ namespace ASR_Client2
     {
         private Porcupine porcupine;
         private PvRecorder recorder;
-        private CancellationTokenSource cts;
         private readonly Config config;
-        private ApplicationState currentState;
-
+        public ApplicationState currentState;
+        private bool disposed = false;
         // Коллбэки/события
         public event Func<Task> OnWakeWordDetected;
         public event Action<string> OnStatusChanged;
         public event Func<string, Task> OnLog;
-
+        private ApplicationState _currentState;
         public WakeWordDetector(Config config)
         {
             this.config = config;
         }
+        public event Action<ApplicationState> OnStateChanged;
 
+        private ApplicationState CurrentState
+        {
+            get => _currentState;
+            set
+            {
+                _currentState = value;
+                OnStateChanged?.Invoke(value); // оповещение внешнего кода
+            }
+        }
         public async Task StartListeningAsync()
         {
-            if (currentState == ApplicationState.StartListening) return;
+            if (CurrentState == ApplicationState.StartListening) return;
 
             try
             {
                 ValidateKeywordFiles();
 
                 porcupine = Porcupine.FromKeywordPaths(
-                    accessKey: config.AccessKey,
-                    keywordPaths: config.WakeWordModels.ToArray(),
+                    accessKey: this.config.AccessKey,
+                    keywordPaths: this.config.WakeWordModels.ToArray(),
                     modelPath: null,
-                    sensitivities: new float[] { 1.0f });
+                    sensitivities: new float[] { 0.7f });
 
                 recorder = PvRecorder.Create(porcupine.FrameLength, -1);
-
-                cts?.Dispose();
-                cts = new CancellationTokenSource();
 
                 OnStatusChanged?.Invoke("Ожидание активационной команды...");
 
                 if (!recorder.IsRecording)
                     recorder.Start();
 
-                currentState = ApplicationState.StartListening;
+                CurrentState = ApplicationState.StartListening;
                 await Task.Delay(100);
 
-                _ = DetectionLoopAsync(cts.Token); // Fire-and-forget
+                await DetectionLoopAsync(); // Fire-and-forget
             }
             catch (Exception ex)
             {
@@ -65,29 +71,53 @@ namespace ASR_Client2
 
         public async Task StopListeningAsync(bool full = false)
         {
-            if (recorder?.IsRecording == true)
+            if (recorder != null && recorder.IsRecording)
             {
                 recorder.Stop();
             }
 
-            currentState = full ? ApplicationState.Idle : ApplicationState.StopListening;
+            CurrentState = full ? ApplicationState.Idle : ApplicationState.StopListening;
             await OnLog?.Invoke("StopListening: Успешно остановлено.");
 
             OnStatusChanged?.Invoke("Остановлено распознавание активационного слова.");
 
-            Dispose();
+            if (full)
+            {
+                Dispose();
+            }
+            
         }
 
-        private async Task DetectionLoopAsync(CancellationToken cancellationToken)
+        private double CalculateVolume(short[] pcm)
+        {
+            double sum = 0;
+            foreach (var sample in pcm)
+            {
+                sum += sample * sample;
+            }
+
+            return Math.Sqrt(sum / pcm.Length); // Корень из средней квадратичной
+        }
+
+        private async Task DetectionLoopAsync()
         {
             await OnLog?.Invoke("Начало прослушивания (wake word loop)");
 
-            while (currentState == ApplicationState.StartListening && recorder.IsRecording && !cancellationToken.IsCancellationRequested)
+            try
             {
-                try
+                while (CurrentState == ApplicationState.StartListening && recorder?.IsRecording == true)
                 {
                     short[] pcm = recorder.Read();
+
                     int keywordIndex = porcupine.Process(pcm);
+
+                    double volume = CalculateVolume(pcm);
+
+                    // Порог громкости — можно подобрать экспериментально
+                    if (volume < 50) // например: 30 = слишком тихо
+                    {
+                        continue;
+                    }
 
                     if (keywordIndex >= 0)
                     {
@@ -101,18 +131,27 @@ namespace ASR_Client2
                         return;
                     }
                 }
-                catch (Exception ex)
-                {
-                    Debug.WriteLine($"Wake word error: {ex.Message}");
-                    await OnLog?.Invoke("Ошибка в wake word loop: " + ex.Message);
-                    return;
-                }
+            }
+            catch (OperationCanceledException)
+            {
+                await OnLog?.Invoke("Wake word detection was cancelled.");
+            }
+            catch (ObjectDisposedException)
+            {
+                await OnLog?.Invoke("Wake word resources disposed during detection loop.");
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"Wake word error: {ex.Message}");
+                await OnLog?.Invoke("Ошибка в wake word loop: " + ex.Message);
             }
         }
 
+
         private void ValidateKeywordFiles()
         {
-            foreach (var keywordPath in config.WakeWordModels)
+
+            foreach (var keywordPath in this.config.WakeWordModels)
             {
                 if (!File.Exists(keywordPath))
                 {
@@ -123,16 +162,15 @@ namespace ASR_Client2
 
         public void Dispose()
         {
+            if (disposed) return;
             porcupine?.Dispose();
             porcupine = null;
 
             recorder?.Dispose();
             recorder = null;
 
-            cts?.Dispose();
-            cts = null;
+            disposed = true;
         }
     }
-
 
 }

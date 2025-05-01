@@ -120,7 +120,32 @@
   <metadata name="menuStrip1.TrayLocation" type="System.Drawing.Point, System.Drawing, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a">
     <value>17, 17</value>
   </metadata>
+  <assembly alias="System.Drawing" name="System.Drawing, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a" />
+  <data name="startButton.Image" type="System.Drawing.Bitmap, System.Drawing" mimetype="application/x-microsoft.net.object.bytearray.base64">
+    <value>
+        iVBORw0KGgoAAAANSUhEUgAAABgAAAAgCAYAAAAIXrg4AAAABGdBTUEAALGPC/xhBQAAAAlwSFlzAAAO
+        vAAADrwBlbxySQAAAP5JREFUSEu91j8PAUEQh+FDRKJQaKh0OqVWrdbr9XofQBR8A71arVbq6FQqjUQh
+        Iv68IySHEXe3O37Jk0huby65G7sT/CsZlB7kt9eUMcAKS4xQhbeMccY1RB7WQQHO2SNc/OmIKRpwem1a
+        8bAt+qggUbSi7y5YoI08YkUr+M0BE9SRRqRohX7ZoAfpwJ/RCkQhnTdHCzl8jXZzHNKF0uo1pPAR7aYk
+        1uiiiJdoi5M6YYYmsrhHW+hqhyHuTaAt8EGaQL6NetEXaQD1gi+mDzB9RWYf2bRNzf5oZluF6WZntl2b
+        HTimR6bzoW8+tpgPXs/RUcZGk9FRYjr8GiYIbtFToa3/qqYxAAAAAElFTkSuQmCC
+</value>
+  </data>
+  <data name="stopButton.Image" type="System.Drawing.Bitmap, System.Drawing" mimetype="application/x-microsoft.net.object.bytearray.base64">
+    <value>
+        iVBORw0KGgoAAAANSUhEUgAAABgAAAAgCAYAAAAIXrg4AAAABGdBTUEAALGPC/xhBQAAAAlwSFlzAAAO
+        vAAADrwBlbxySQAAAJBJREFUSEvt1rENg0AQRNGN3AMRZTikXKqgEBy5ClLYQbYE0jiw7m92K73kI016
+        RL9/7pGGNDbShrZu90xzWtO7kTa0pc3zpvRKO0yb2o7lEypoO7ZLoGnbfiDZSLKRZCPJRpKNJBtJNpJs
+        JNlIspFkI8lGko0kG0k2kuofnPIns/zR15X+tnyv9Mer34+LOAAA8TCHGqD/oAAAAABJRU5ErkJggg==
+</value>
+  </data>
+  <metadata name="notifyIcon1.TrayLocation" type="System.Drawing.Point, System.Drawing, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a">
+    <value>132, 17</value>
+  </metadata>
+  <metadata name="contextMenuStrip2.TrayLocation" type="System.Drawing.Point, System.Drawing, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a">
+    <value>246, 17</value>
+  </metadata>
   <metadata name="$this.TrayHeight" type="System.Int32, mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089">
-    <value>46</value>
+    <value>69</value>
   </metadata>
 </root>

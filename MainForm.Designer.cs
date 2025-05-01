@@ -5,20 +5,11 @@
         /// <summary>
         ///  Required designer variable.
         /// </summary>
-        private System.ComponentModel.IContainer components = null;
 
         /// <summary>
         ///  Clean up any resources being used.
         /// </summary>
         /// <param name="disposing">true if managed resources should be disposed; otherwise, false.</param>
-        protected override void Dispose(bool disposing)
-        {
-            if (disposing && (components != null))
-            {
-                components.Dispose();
-            }
-            base.Dispose(disposing);
-        }
 
         #region Windows Form Designer generated code
 
@@ -28,6 +19,8 @@
         /// </summary>
         private void InitializeComponent()
         {
+            components = new System.ComponentModel.Container();
+            System.ComponentModel.ComponentResourceManager resources = new System.ComponentModel.ComponentResourceManager(typeof(MainForm));
             menuStrip1 = new MenuStrip();
             файлToolStripMenuItem = new ToolStripMenuItem();
             выходToolStripMenuItem = new ToolStripMenuItem();
@@ -38,6 +31,8 @@
             flowLayoutPanel1 = new FlowLayoutPanel();
             statusLabel = new Label();
             responseLabel = new Label();
+            notifyIcon1 = new NotifyIcon(components);
+            contextMenuStrip2 = new ContextMenuStrip(components);
             menuStrip1.SuspendLayout();
             bottomPanel.SuspendLayout();
             flowLayoutPanel1.SuspendLayout();
@@ -73,7 +68,7 @@
             bottomPanel.Controls.Add(startButton, 0, 0);
             bottomPanel.Controls.Add(stopButton, 1, 0);
             bottomPanel.Dock = DockStyle.Bottom;
-            bottomPanel.Location = new Point(0, 394);
+            bottomPanel.Location = new Point(0, 478);
             bottomPanel.Margin = new Padding(5);
             bottomPanel.Name = "bottomPanel";
             bottomPanel.RowCount = 1;
@@ -84,37 +79,38 @@
             // startButton
             // 
             startButton.Dock = DockStyle.Fill;
+            startButton.Image = (Image)resources.GetObject("startButton.Image");
             startButton.Location = new Point(10, 10);
             startButton.Margin = new Padding(10);
             startButton.Name = "startButton";
             startButton.Size = new Size(172, 51);
             startButton.TabIndex = 0;
-            startButton.Text = "Запуск";
-            startButton.UseVisualStyleBackColor = true;
+            startButton.UseVisualStyleBackColor = false;
             startButton.Click += startButton_Click;
             // 
             // stopButton
             // 
             stopButton.Dock = DockStyle.Fill;
+            stopButton.Image = (Image)resources.GetObject("stopButton.Image");
             stopButton.Location = new Point(202, 10);
             stopButton.Margin = new Padding(10);
             stopButton.Name = "stopButton";
             stopButton.Size = new Size(172, 51);
             stopButton.TabIndex = 1;
-            stopButton.Text = "Остановка";
-            stopButton.UseVisualStyleBackColor = true;
+            stopButton.UseVisualStyleBackColor = false;
             stopButton.Click += stopButton_Click;
             // 
             // textBox1
             // 
             textBox1.Dock = DockStyle.Bottom;
-            textBox1.Location = new Point(0, 359);
+            textBox1.Location = new Point(0, 426);
             textBox1.Multiline = true;
             textBox1.Name = "textBox1";
             textBox1.ScrollBars = ScrollBars.Vertical;
-            textBox1.Size = new Size(384, 35);
+            textBox1.Size = new Size(384, 52);
             textBox1.TabIndex = 5;
-            textBox1.Visible = false;
+            textBox1.TabStop = false;
+            textBox1.WordWrap = false;
             // 
             // flowLayoutPanel1
             // 
@@ -124,7 +120,7 @@
             flowLayoutPanel1.FlowDirection = FlowDirection.TopDown;
             flowLayoutPanel1.Location = new Point(0, 24);
             flowLayoutPanel1.Name = "flowLayoutPanel1";
-            flowLayoutPanel1.Size = new Size(384, 335);
+            flowLayoutPanel1.Size = new Size(384, 402);
             flowLayoutPanel1.TabIndex = 6;
             // 
             // statusLabel
@@ -148,11 +144,21 @@
             responseLabel.TabIndex = 4;
             responseLabel.TextAlign = ContentAlignment.TopCenter;
             // 
+            // notifyIcon1
+            // 
+            notifyIcon1.Text = "notifyIcon1";
+            notifyIcon1.Visible = true;
+            // 
+            // contextMenuStrip2
+            // 
+            contextMenuStrip2.Name = "contextMenuStrip2";
+            contextMenuStrip2.Size = new Size(181, 26);
+            // 
             // MainForm
             // 
             AutoScaleDimensions = new SizeF(7F, 15F);
             AutoScaleMode = AutoScaleMode.Font;
-            ClientSize = new Size(384, 465);
+            ClientSize = new Size(384, 549);
             Controls.Add(flowLayoutPanel1);
             Controls.Add(textBox1);
             Controls.Add(bottomPanel);
@@ -163,6 +169,7 @@
             Name = "MainForm";
             StartPosition = FormStartPosition.CenterScreen;
             Text = "Голосовой помощник - БАП ГМЗ-2";
+            SizeChanged += MainForm_SizeChanged;
             menuStrip1.ResumeLayout(false);
             menuStrip1.PerformLayout();
             bottomPanel.ResumeLayout(false);
@@ -182,5 +189,9 @@
         private Label statusLabel;
         private ToolStripMenuItem файлToolStripMenuItem;
         private ToolStripMenuItem выходToolStripMenuItem;
+        private ContextMenuStrip contextMenuStrip1;
+        private NotifyIcon notifyIcon1;
+        private System.ComponentModel.IContainer components;
+        private ContextMenuStrip contextMenuStrip2;
     }
 }
