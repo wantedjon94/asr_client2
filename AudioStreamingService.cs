@@ -29,7 +29,7 @@ namespace ASR_Client2
             this.config = config;
             responseAudioPlayer = new ResponseAudioPlayer(new WaveFormat(48000, 16, 1));
         }
-
+        
         public async Task<bool> ConnectAsync()
         {
             try

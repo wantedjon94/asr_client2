@@ -39,17 +39,18 @@ namespace ASR_Client2
         public async Task StartListeningAsync()
         {
             if (CurrentState == ApplicationState.StartListening) return;
-
+            //MessageBox.Show(this.config.AccessKey.ToString() + " - " + this.config.WakeWordModels.ToArray().Length.ToString());
             try
             {
+               
                 ValidateKeywordFiles();
-
-                porcupine = Porcupine.FromKeywordPaths(
+                
+                porcupine = Porcupine.FromBuilinModel(
                     accessKey: this.config.AccessKey,
                     keywordPaths: this.config.WakeWordModels.ToArray(),
-                    modelPath: null,
+                    modelPath: this.config.WakeWordConfig,
                     sensitivities: new float[] { 0.7f });
-
+                
                 recorder = PvRecorder.Create(porcupine.FrameLength, -1);
 
                 OnStatusChanged?.Invoke("Ожидание активационной команды...");
@@ -64,7 +65,8 @@ namespace ASR_Client2
             }
             catch (Exception ex)
             {
-                OnStatusChanged?.Invoke($"Ошибка инициализации: {ex.Message}");
+                //OnStatusChanged?.Invoke($"Ошибка инициализации: {ex.Message}");
+                MessageBox.Show(ex.ToString());
                 Dispose();
             }
         }
@@ -130,6 +132,8 @@ namespace ASR_Client2
 
                         return;
                     }
+
+                    Thread.Yield();
                 }
             }
             catch (OperationCanceledException)
@@ -150,13 +154,17 @@ namespace ASR_Client2
 
         private void ValidateKeywordFiles()
         {
-
             foreach (var keywordPath in this.config.WakeWordModels)
             {
                 if (!File.Exists(keywordPath))
                 {
                     throw new FileNotFoundException($"Файл ключевого слова не найден: {keywordPath}");
                 }
+            }
+            var modelPath  = this.config.WakeWordConfig;
+            if (!File.Exists(modelPath))
+            {
+                throw new FileNotFoundException($"Файл конфигураций не найден: {modelPath}");
             }
         }
 

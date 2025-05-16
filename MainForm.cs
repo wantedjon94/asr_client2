@@ -19,6 +19,7 @@ using Svg;
 using static System.Windows.Forms.VisualStyles.VisualStyleElement;
 using Application = System.Windows.Forms.Application;
 
+
 namespace ASR_Client2
 {
     public partial class MainForm : Form
@@ -66,7 +67,7 @@ namespace ASR_Client2
             flowLayoutPanel1.Controls.Add(voiceVisualizer);
 
         }
-
+        
         private void notifyIcon1_DoubleClick(object? sender, EventArgs e)
         {
             // Show the form when the user double clicks on the notify icon.
@@ -825,6 +826,7 @@ namespace ASR_Client2
                 notifyIcon1.Visible = true;
                 this.Hide();
                 notifyIcon1.Icon = SystemIcons.Application;
+                notifyIcon1.Text = "Голосовой помощник"; 
                 notifyIcon1.ShowBalloonTip(500, "Приложение свернуто", "Двойной клик по иконке - открыть.", ToolTipIcon.Info);
             }else if (this.WindowState == FormWindowState.Normal)
             {
@@ -839,6 +841,7 @@ namespace ASR_Client2
         public string WebSocketUrl { get; set; }
         public int SampleRate { get; set; }
         public List<string> WakeWordModels { get; set; }
+        public string WakeWordConfig { get; set; }
         public AudioFiles AudioFiles { get; set; }
 
     }
